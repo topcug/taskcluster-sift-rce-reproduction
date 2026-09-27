@@ -6,7 +6,7 @@ The JavaScript in this PoC only prints one line in the local server terminal and
 
 There is one important limit to keep in mind before running the test. Taskcluster normally asks its separate Auth service which scopes it should return. Starting the complete Auth service would require its database and settings, so the supplied start script replaces that one request with a local function that returns the scope from the PoC. Everything after that reply is Taskcluster's own code: the web server reads the HTTP request, GraphQL calls `expandScopes`, the scope loader passes the filter to `sift`, and `sift` runs the string inside `$where`. For that reason, this PoC proves that the supplied filter can run JavaScript after Auth returns the scopes, but it does not prove which scopes a complete Taskcluster installation would return to an anonymous caller.
 
-![The GraphQL request and the line printed in the Taskcluster server terminal](image-1.png)
+![The GraphQL request and the line printed in the Taskcluster server terminal](assets/image-1.png)
 
 ## What you need before you start
 
@@ -83,7 +83,7 @@ The script first checks that the selected Taskcluster repository has `sift@17.1.
 Taskcluster web-server: http://127.0.0.1:3211/graphql
 ```
 
-![The local Taskcluster web server waiting for the request](image.png)
+![The local Taskcluster web server waiting for the request](assets/image.png)
 
 The script does not connect to Taskcluster's database, message service, or the other Taskcluster services because this query does not use them. It gives the web server empty local objects in their place. As explained above, it also replaces the outgoing Auth request with a small local function that returns `assume:anonymous`, which is the scope supplied in the request. The incoming request still goes through Taskcluster's real [`/graphql` route and credential-reading code](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/servers/createApp.js#L82-L91), then through its [`Scopes` resolver and scope loader](https://github.com/taskcluster/taskcluster/blob/f48168b7c3a8a8f78c4463cde98c1218a9edc6c6/services/web-server/src/loaders/scopes.js#L18-L30).
 
